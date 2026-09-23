@@ -103,9 +103,12 @@ class OpenAIExplanationProvider:
                 "experience, or services not present in the evidence. Return the "
                 "summary exactly as supplied. For MATCHED results, return exactly one "
                 "1-2 sentence explanation per supplied contractor, preserving IDs and "
-                "order. In every explanation, include the contractor's exact numeric "
-                "price_from_kzt and the exact requested event_format text as supplied; "
-                "also differentiate candidates with concrete description evidence. "
+                "order. Write every explanation entirely in natural Russian. In every "
+                "explanation, include the contractor's exact numeric price_from_kzt, "
+                "formatted naturally with digit grouping, and the exact requested "
+                "event_format text as supplied. Do not translate Russian evidence "
+                "markers into English. Also differentiate candidates with concrete "
+                "description evidence. Keep each explanation to 1-2 sentences. "
                 "For empty results, return no contractor explanations."
             ),
             input=json.dumps(
@@ -326,18 +329,23 @@ def _fallback_draft(
 def _fallback_explanation(
     query: RecommendationQuery, evidence: ContractorEvidence
 ) -> str:
+    price = f"{evidence.price_from_kzt:,}".replace(",", " ")
+    budget = f"{query.budget_kzt:,}".replace(",", " ")
     first_sentence = (
-        f"{evidence.contractor_name} costs {evidence.price_from_kzt:,} ₸, fits the "
-        f"{query.budget_kzt:,} ₸ budget, supports {query.event_format}, and is "
-        f"available on {query.event_date.isoformat()}."
+        f"Стоимость услуг {evidence.contractor_name} — от {price} ₸, что укладывается "
+        f"в бюджет {budget} ₸; подрядчик работает с форматом «{query.event_format}» "
+        f"и свободен {query.event_date.isoformat()}."
     )
     details: list[str] = []
     if query.language is not None:
-        details.append(f"supports {query.language}")
+        details.append(f"работает на языке «{query.language}»")
     if query.duration_hours is not None and evidence.max_hours is not None:
         details.append(
-            f"covers {query.duration_hours:g} hours with a {evidence.max_hours:g}-hour limit"
+            f"подходит для {query.duration_hours:g} ч при лимите "
+            f"{evidence.max_hours:g} ч"
         )
     if not details:
-        details.append(f"lists {', '.join(evidence.languages)} as working languages")
-    return f"{first_sentence} The profile {' and '.join(details)}."
+        details.append(
+            f"в профиле указаны рабочие языки: {', '.join(evidence.languages)}"
+        )
+    return f"{first_sentence} Профиль {' и '.join(details)}."

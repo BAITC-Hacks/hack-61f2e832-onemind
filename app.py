@@ -7,6 +7,9 @@ from datetime import date
 from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from src import (
     AgentRecommendationResponse,
@@ -19,6 +22,15 @@ from src import (
 
 
 DATASET_PATH = Path(__file__).parent / "data" / "hackathon_dataset_anonymized.csv"
+PIPELINE_LABELS = {
+    "city": "город",
+    "category": "категория",
+    "availability": "доступность",
+    "event_format": "формат мероприятия",
+    "budget": "бюджет",
+    "language": "язык",
+    "duration": "длительность",
+}
 
 
 @st.cache_resource
@@ -35,6 +47,39 @@ def format_kzt(value: int) -> str:
     return f"{value:,}".replace(",", " ") + " ₸"
 
 
+def localized_counts(counts: dict[str, int]) -> dict[str, int]:
+    return {PIPELINE_LABELS.get(name, name): count for name, count in counts.items()}
+
+
+def localized_result_message(
+    response: AgentRecommendationResponse, query: RecommendationQuery
+) -> str:
+    if response.state is ResultState.MATCHED:
+        qualified = response.diagnostics.qualified_count
+        returned = response.diagnostics.returned_count
+        if returned < 3:
+            return (
+                f"После применения всех ограничений найдено только {qualified}; "
+                f"поэтому показано {returned}."
+            )
+        if qualified > returned:
+            return (
+                f"Найдено подходящих подрядчиков: {qualified}. "
+                f"Показаны первые {returned} по детерминированному рейтингу."
+            )
+        return f"Найдено подходящих подрядчиков: {returned}."
+    if response.state is ResultState.CATEGORY_NOT_FOUND:
+        return (
+            f"В городе {query.city} нет подрядчиков категории "
+            f"«{query.contractor_category}»."
+        )
+    return (
+        f"В городе {query.city} есть подрядчики категории "
+        f"«{query.contractor_category}», но после применения ограничений "
+        "подходящих кандидатов не осталось."
+    )
+
+
 def render_result(
     response: AgentRecommendationResponse,
     query: RecommendationQuery,
@@ -42,25 +87,26 @@ def render_result(
 ) -> None:
     st.divider()
 
+    result_message = localized_result_message(response, query)
     if response.state is ResultState.MATCHED:
-        st.success(response.message)
+        st.success(result_message)
     elif response.state is ResultState.CATEGORY_NOT_FOUND:
-        st.warning(response.message)
+        st.warning(result_message)
         if response.diagnostics.available_categories:
             st.caption(
-                "Categories available in this city: "
+                "Категории, доступные в этом городе: "
                 + ", ".join(response.diagnostics.available_categories)
             )
     else:
-        st.warning(response.message)
+        st.warning(result_message)
         render_rejection_counts(response)
 
     mode_label = (
-        "OpenAI explanation, checked against deterministic results"
+        "пояснение OpenAI, проверенное по детерминированным результатам"
         if response.explanation_mode == "openai"
-        else "Deterministic fallback explanation"
+        else "детерминированное резервное пояснение"
     )
-    st.caption(f"Explanation mode: {mode_label}")
+    st.caption(f"Режим пояснений: {mode_label}")
 
     for card in response.cards:
         evidence = tools.get_contractor_details(card.contractor_id)
@@ -69,20 +115,22 @@ def render_result(
             st.caption(" · ".join(evidence.categories))
 
             city_column, price_column, availability_column = st.columns(3)
-            city_column.metric("City", card.city)
-            price_column.metric("Price from", format_kzt(card.price_kzt))
+            city_column.metric("Город", card.city)
+            price_column.metric("Цена от", format_kzt(card.price_kzt))
             availability_column.metric(
-                "Availability", f"Available {query.event_date.isoformat()}"
+                "Доступность", f"Свободен {query.event_date.isoformat()}"
             )
 
-            st.markdown(f"**Event formats:** {', '.join(evidence.event_formats)}")
-            st.markdown(f"**Languages:** {', '.join(evidence.languages)}")
-            duration_text = (
-                f"{evidence.max_hours:g} hours"
-                if evidence.max_hours is not None
-                else "Not specified in the catalog"
+            st.markdown(
+                f"**Форматы мероприятий:** {', '.join(evidence.event_formats)}"
             )
-            st.markdown(f"**Maximum duration:** {duration_text}")
+            st.markdown(f"**Языки:** {', '.join(evidence.languages)}")
+            duration_text = (
+                f"{evidence.max_hours:g} ч"
+                if evidence.max_hours is not None
+                else "Не указана в каталоге"
+            )
+            st.markdown(f"**Максимальная длительность:** {duration_text}")
             st.info(card.explanation)
 
     render_pipeline_trace(response, query)
@@ -90,11 +138,11 @@ def render_result(
 
 def render_rejection_counts(response: AgentRecommendationResponse) -> None:
     labels = {
-        "availability": "Busy on selected date",
-        "event_format": "Event format mismatch",
-        "budget": "Over budget",
-        "language": "Language mismatch",
-        "duration": "Duration mismatch",
+        "availability": "Занят в выбранную дату",
+        "event_format": "Не подходит формат",
+        "budget": "Выше бюджета",
+        "language": "Не подходит язык",
+        "duration": "Не подходит длительность",
     }
     failures = [
         (labels[reason], count)
@@ -104,7 +152,7 @@ def render_rejection_counts(response: AgentRecommendationResponse) -> None:
     if not failures:
         return
 
-    st.markdown("**Why candidates were rejected**")
+    st.markdown("**Почему кандидаты не прошли отбор**")
     columns = st.columns(len(failures))
     for column, (label, count) in zip(columns, failures):
         column.metric(label, count)
@@ -113,39 +161,47 @@ def render_rejection_counts(response: AgentRecommendationResponse) -> None:
 def render_pipeline_trace(
     response: AgentRecommendationResponse, query: RecommendationQuery
 ) -> None:
-    with st.expander("How the AI made this recommendation"):
+    with st.expander("Как ИИ сформировал рекомендацию"):
         st.markdown(
-            "Request → deterministic filters → deterministic ranking → "
-            "AI or fallback explanation → ID and ordering validation"
+            "Запрос → детерминированные фильтры → детерминированный рейтинг → "
+            "пояснение ИИ или резервное пояснение → проверка ID и порядка"
         )
         st.write(
             {
-                "request": {
-                    "city": query.city,
-                    "event_date": query.event_date.isoformat(),
-                    "event_format": query.event_format,
-                    "contractor_category": query.contractor_category,
-                    "budget_kzt": query.budget_kzt,
-                    "language": query.language,
-                    "duration_hours": query.duration_hours,
+                "Запрос": {
+                    "Город": query.city,
+                    "Дата мероприятия": query.event_date.isoformat(),
+                    "Формат мероприятия": query.event_format,
+                    "Категория подрядчика": query.contractor_category,
+                    "Бюджет, ₸": query.budget_kzt,
+                    "Язык": query.language,
+                    "Длительность, ч": query.duration_hours,
                 },
-                "executed_stage_counts": dict(response.diagnostics.stage_counts),
-                "first_failure_counts": dict(response.diagnostics.rejected_counts),
-                "qualified": response.diagnostics.qualified_count,
-                "returned": response.diagnostics.returned_count,
-                "explanation_mode": response.explanation_mode,
-                "validation": "contractor IDs and deterministic order preserved",
+                "Количество после этапов": localized_counts(
+                    dict(response.diagnostics.stage_counts)
+                ),
+                "Причины первого отказа": localized_counts(
+                    dict(response.diagnostics.rejected_counts)
+                ),
+                "Подходят": response.diagnostics.qualified_count,
+                "Показаны": response.diagnostics.returned_count,
+                "Режим пояснений": (
+                    "OpenAI"
+                    if response.explanation_mode == "openai"
+                    else "детерминированный резервный"
+                ),
+                "Проверка": "ID подрядчиков и детерминированный порядок сохранены",
             }
         )
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Smart Contractor Selection",
+        page_title="Умный подбор подрядчиков",
         layout="wide",
     )
-    st.title("Smart Contractor Selection")
-    st.caption("HackAlem AI 2026 · Track 6 · Official 66-contractor catalog")
+    st.title("Умный подбор подрядчиков")
+    st.caption("HackAlem AI 2026 · Трек 6 · Официальный каталог из 66 подрядчиков")
 
     catalog, tools = load_runtime()
     cities = sorted({item.city for item in catalog}, key=str.casefold)
@@ -171,45 +227,45 @@ def main() -> None:
     with st.form("recommendation_request"):
         first_row = st.columns(4)
         city = first_row[0].selectbox(
-            "City",
+            "Город",
             cities,
             index=select_index(cities, "Алматы"),
         )
         event_date = first_row[1].date_input(
-            "Event date",
+            "Дата мероприятия",
             value=default_date,
             min_value=calendar_start,
             max_value=calendar_end,
         )
         event_format = first_row[2].selectbox(
-            "Event format",
+            "Формат мероприятия",
             event_formats,
             index=select_index(event_formats, "корпоратив"),
         )
         contractor_category = first_row[3].selectbox(
-            "Contractor category",
+            "Категория подрядчика",
             categories,
             index=select_index(categories, "Ведущий"),
         )
 
         second_row = st.columns(3)
         budget_kzt = second_row[0].number_input(
-            "Budget KZT",
+            "Бюджет, ₸",
             min_value=0,
             value=1_000_000,
             step=50_000,
         )
         language_choice = second_row[1].selectbox(
-            "Language (optional)",
-            ["Any language", *languages],
-            index=select_index(["Any language", *languages], "русский"),
+            "Язык (необязательно)",
+            ["Любой язык", *languages],
+            index=select_index(["Любой язык", *languages], "русский"),
         )
         use_duration = second_row[2].checkbox(
-            "Specify duration",
+            "Указать длительность",
             value=True,
         )
         duration_hours = second_row[2].number_input(
-            "Duration hours",
+            "Длительность, ч",
             min_value=0.5,
             value=6.0,
             step=0.5,
@@ -217,7 +273,7 @@ def main() -> None:
         )
 
         submitted = st.form_submit_button(
-            "Find contractors",
+            "Подобрать подрядчиков",
             type="primary",
             use_container_width=True,
         )
@@ -230,9 +286,9 @@ def main() -> None:
             contractor_category=contractor_category,
             budget_kzt=int(budget_kzt),
             duration_hours=float(duration_hours) if use_duration else None,
-            language=None if language_choice == "Any language" else language_choice,
+            language=None if language_choice == "Любой язык" else language_choice,
         )
-        with st.spinner("Checking availability and ranking candidates..."):
+        with st.spinner("Проверяем доступность и ранжируем кандидатов..."):
             response = RecommendationAgent(tools).recommend(query)
         st.session_state["recommendation_response"] = response
         st.session_state["recommendation_query"] = query
@@ -242,10 +298,11 @@ def main() -> None:
     if stored_response is not None and stored_query is not None:
         render_result(stored_response, stored_query, tools)
     else:
-        api_status = "configured" if os.getenv("OPENAI_API_KEY") else "not configured"
+        api_status = "настроен" if os.getenv("OPENAI_API_KEY") else "не настроен"
         st.info(
-            "Choose the event requirements and run the recommendation. "
-            f"OPENAI_API_KEY is {api_status}; deterministic fallback remains available."
+            "Выберите параметры мероприятия и запустите подбор. "
+            f"OPENAI_API_KEY {api_status}; резервные детерминированные пояснения "
+            "всегда доступны."
         )
 
 
