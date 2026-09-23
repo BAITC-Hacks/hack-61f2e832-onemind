@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Protocol
@@ -14,6 +15,9 @@ from .models import (
     ResultState,
 )
 from .tools import ContractorEvidence, RecommendationTools
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -99,8 +103,10 @@ class OpenAIExplanationProvider:
                 "experience, or services not present in the evidence. Return the "
                 "summary exactly as supplied. For MATCHED results, return exactly one "
                 "1-2 sentence explanation per supplied contractor, preserving IDs and "
-                "order. Differentiate candidates with concrete evidence. For empty "
-                "results, return no contractor explanations."
+                "order. In every explanation, include the contractor's exact numeric "
+                "price_from_kzt and the exact requested event_format text as supplied; "
+                "also differentiate candidates with concrete description evidence. "
+                "For empty results, return no contractor explanations."
             ),
             input=json.dumps(
                 {
@@ -193,9 +199,13 @@ class RecommendationAgent:
                 if _valid_draft(generated, query, deterministic_result, evidence):
                     draft = generated
                     explanation_mode = self._provider.mode
-            except Exception:
+            except Exception as error:
                 # API, schema, refusal, and timeout failures all preserve a demoable MVP.
-                pass
+                logger.warning(
+                    "OpenAI explanation failed; using deterministic fallback (%s: %s)",
+                    type(error).__name__,
+                    error,
+                )
 
         submitted_ids = tuple(item.contractor_id for item in draft.explanations)
         validation = self._tools.validate_recommendations(query, submitted_ids)
