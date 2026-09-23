@@ -31,7 +31,7 @@ The deterministic Python layer is the source of truth for:
 
 The AI layer produces concise, contractor-specific explanations using only evidence supplied from the official dataset. It never decides eligibility or ranking.
 
-The validation layer rejects changed IDs or ordering, prevents rejected contractors from being introduced, and limits the final output to at most three contractors. Invalid or unavailable AI output is replaced by deterministic evidence-based explanations.
+The validation layer requires the deterministic contractor IDs and ordering to remain unchanged, checks explanation count, association, and structure, and requires concrete literal evidence markers. Prompt instructions require grounded, contractor-specific explanations, but claim-level verification of every free-form statement is not implemented. Invalid or unavailable AI output is replaced by deterministic evidence-based explanations.
 
 ## Agentic AI
 
@@ -87,11 +87,19 @@ Eligible contractors are sorted by descending total score. Ties are resolved by 
 
 ## Installation
 
+Python 3.10 or newer is required. Python 3.11.9 has been verified for this project.
+
+Run all setup commands from the repository root:
+
+```powershell
+cd <repository-directory>
+```
+
 Windows PowerShell:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
@@ -102,6 +110,14 @@ To enable AI-generated explanations in PowerShell:
 ```powershell
 $env:OPENAI_API_KEY="your-api-key"
 ```
+
+Alternatively, create a `.env` file in the repository root:
+
+```text
+OPENAI_API_KEY=your-api-key
+```
+
+The application loads `.env` automatically. This file is excluded by `.gitignore` and must never be committed. Never place a real API key in this README.
 
 `OPENAI_MODEL` may optionally override the default explanation model. If `OPENAI_API_KEY` is absent, the complete application remains operational using deterministic fallback explanations. The UI labels the active mode as either a validated OpenAI explanation or a deterministic fallback explanation.
 
@@ -230,7 +246,7 @@ tests/
 The 19-test suite covers:
 
 - catalog normalization and multi-category matching
-- busy-date, city, category, event-format, budget, language, and duration behavior
+- busy-date, city, category, budget, language, and duration behavior
 - blank `max_hours` handling
 - all three result states and the three-card limit
 - deterministic ordering and date-sensitive availability
